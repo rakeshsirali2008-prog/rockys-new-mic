@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Rocky's Mic</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0;
+         margin: 0; padding: 24px; display: flex; justify-content: center; }
+  .card { width: 100%; max-width: 360px; }
+  h1 { text-align: center; font-size: 26px; margin: 8px 0 20px; }
+  input { width: 100%; box-sizing: border-box; padding: 12px; font-size: 16px;
+          border-radius: 8px; border: 1px solid #334155; background: #1e293b; color: #fff; }
+  button { width: 100%; padding: 14px; margin-top: 12px; font-size: 18px; font-weight: 600;
+           border: none; border-radius: 8px; color: #fff; cursor: pointer; }
+  #connect { background: #2563eb; }
+  #stream { background: #16a34a; }
+  #stream.on { background: #dc2626; }
+  button:disabled { opacity: 0.5; }
+  #status { margin-top: 16px; text-align: center; font-size: 15px; color: #94a3b8; min-height: 20px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🎤 Rocky's Mic</h1>
+  <label for="ip">PC address (shown on PC when server starts)</label>
+  <input id="ip" placeholder="192.168.x.x:8080" inputmode="url" />
+  <button id="connect">Connect to PC</button>
+  <button id="stream" disabled>Start Streaming</button>
+  <div id="status">Not connected</div>
+</div>
+
+<script>
+  let ws = null
+  let audioCtx = null
+  let micStream = null
+  let processor = null
+
+  const $ = (id) => document.getElementById(id)
+  const setStatus = (t) => { $('status').textContent = t }
+
+  // Prefill with the page's own address when opened from the PC server
+  $('ip').value = location.host
+
+  $('connect').onclick = () => {
+    if (ws) { stop(); ws.close(); ws = null; $('connect').textContent = 'Connect to PC'; $('stream').disabled = true; return }
+    const addr = $('ip').value.trim()
+    if (!addr) { setStatus('Enter the PC address first'); return }
+    setStatus('Connecting...')
+    ws = new WebSocket(`ws://${addr}`)
+    ws.binaryType = 'arraybuffer'
+    ws.onopen = () => {
+      setStatus('Connected to PC')
+      $('connect').textContent = 'Disconnect'
+      $('stream').disabled = false
+    }
+    ws.onclose = () => {
+      stop()
+      ws = null
+      setStatus('Disconnected')
+      $('connect').textContent = 'Connect to PC'
+      $('stream').disabled = true
+    }
+    ws.onerror = () => setStatus('Could not reach PC. Check the address and hotspot.')
+  }
+
+  $('stream').onclick = async () => {
+    if (processor) { stop(); return }
+    try {
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    } catch (e) {
+      setStatus('Microphone blocked. Allow mic permission in the browser.')
+      return
+    }
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+    ws.send(JSON.stringify({ type: 'hello', sampleRate: audioCtx.sampleRate }))
+
+    const source = audioCtx.createMediaStreamSource(micStream)
+    processor = audioCtx.createScriptProcessor(4096, 1, 1)
+    processor.onaudioprocess = (e) => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return
+      const input = e.inputBuffer.getChannelData(0)
+      // Convert float samples (-1..1) to 16-bit PCM
+      const pcm = new Int16Array(input.length)
+      for (let i = 0; i < input.length; i++) {
+        const s = Math.max(-1, Math.min(1, input[i]))
+        pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff
+      }
+      ws.send(pcm.buffer)
+    }
+    source.connect(processor)
+    processor.connect(audioCtx.destination)
+
+    $('stream').textContent = 'Stop Streaming'
+    $('stream').classList.add('on')
+    setStatus('Streaming live')
+  }
+
+  function stop() {
+    if (processor) { processor.disconnect(); processor = null }
+    if (audioCtx) { audioCtx.close(); audioCtx = null }
+    if (micStream) { micStream.getTracks().forEach((t) => t.stop()); micStream = null }
+    $('stream').textContent = 'Start Streaming'
+    $('stream').classList.remove('on')
+  }
+</script>
+</body>
+</html>
